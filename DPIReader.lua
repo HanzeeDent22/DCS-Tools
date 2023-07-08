@@ -12,18 +12,7 @@
 -- 6. You can copy the DPIs from the dcs.log file in your saved games folder at Saved Games\DCS\Logs. You have to re-open the DCS.log file to see new logs after running the script again.
 --
 -- The elevation is always ground level. DCS might return incorrect MGRS grids for the script.
---
--- Example out put in dcs.log:
--- DPI-1 N35°7.363' E36°41.555' 984ft 37S BU 8974089089
--- DPI-2 N35°7.38' E36°41.754' 984ft 37S BU 9004489112
--- DPI-3 N35°7.404' E36°41.781' 984ft 37S BU 9008689157
--- DPI-4 N35°7.35' E36°41.86' 984ft 37S BU 9020389054
--- DPI-5 N35°7.358' E36°41.875' 984ft 37S BU 9022589068
--- DPI-6 N35°7.137' E36°41.671' 984ft 37S BU 8990688666
--- DPI-7 N35°7.117' E36°41.615' 984ft 37S BU 8982188631
--- DPI-8 N35°7.313' E36°42.203' 984ft 37S BU 9072388973
--- DPI-9 N35°7.309' E36°42.549' 984ft 37S BU 9124788953
--- DPI-10 N35°7.25' E36°42.785' 984ft 37S BU 9160388837
+
 
 local names = { "DPI", "Data" } -- <<< add zone names here <<<
 
@@ -45,9 +34,10 @@ function DPIReader.mToft(m)
     return ft
 end
 
-function DPIReader.LLtoDecMinString(lat, long)
+function DPIReader.LLtoString(lat, long)
     local latDir = "N"
     local longDir = "E"
+
     if lat < 0 then
         latDir = "S"
     end
@@ -64,24 +54,27 @@ function DPIReader.LLtoDecMinString(lat, long)
     end
 
     local lat_d = math.floor(lat)
-    local lat_m = DPIReader.round((lat - lat_d) * 60, 3)
-
-
-    local str_lat = latDir .. tostring(lat_d) .. "°" .. tostring(lat_m) .. "'"
-
     local long_d = math.floor(long)
-    local long_m = DPIReader.round((long - long_d) * 60, 3)
 
+    local lat_decM = DPIReader.round((lat - lat_d) * 60, 3)   
+    local long_decM = DPIReader.round((long - long_d) * 60, 3)
+  
+    local decMstring = latDir .. tostring(lat_d) .. "°" .. tostring(lat_decM) .. "' " .. longDir .. tostring(long_d) .. "°" .. tostring(long_decM) .. "'"
 
+    local lat_M = math.floor(lat_decM)
+    local long_M = math.floor(long_decM)
 
-    local str_long = longDir .. tostring(long_d) .. "°" .. tostring(long_m) .. "'"
+    local lat_decS = DPIReader.round((lat_decM - lat_M) * 60, 3)  
+    local long_decS = DPIReader.round((long_decM - long_M) * 60, 3)  
 
-    return str_lat, str_long
+    local decSstring = latDir .. tostring(lat_d) .. "°" .. tostring(lat_M) .. "'" .. tostring(lat_decS) .. "\"" .. longDir .. tostring(long_d) .. "°" .. tostring(long_M) .. "'" .. tostring(long_decS) .. "\"" 
+
+    return decMstring, decSstring
 end
 
 function DPIReader.record(names)
-    local str = ""
-
+    local textOutString = ""
+    local logString = ""
     for _, name in pairs(names) do
         local number = 0
         local zoneNameValid = true
@@ -92,29 +85,32 @@ function DPIReader.record(names)
             local zone = trigger.misc.getZone(searchName)
 
             if zone then
-                local latitude, longitude, altitude = coord.LOtoLL(zone.point)
-                altitude = math.floor(DPIReader.mToft(land.getHeight({ x = zone.point.x, y = zone.point.z })))
-                local latstr, longstr = DPIReader.LLtoDecMinString(latitude, longitude)
-                local line = searchName .. " " .. latstr .. " " .. longstr .. " " .. altitude .. "ft"
+                local latitude, longitude, _ = coord.LOtoLL(zone.point)
+                local elevation = math.floor(DPIReader.mToft(land.getHeight({ x = zone.point.x, y = zone.point.z })))
+                local decMstring, decSstring = DPIReader.LLtoString(latitude, longitude)
+                
 
                 local mgrs = coord.LLtoMGRS(latitude, longitude)
                 local mgrs_line = mgrs.UTMZone .. " " .. mgrs.MGRSDigraph .. " " .. mgrs.Easting .. mgrs.Northing
 
-                trigger.action.markToAll(DPIReader.zoneNr, line .. "\n" .. mgrs_line, zone.point)
+                trigger.action.markToAll(DPIReader.zoneNr, searchName .. " " .. elevation .. "ft" .. "\n" .. decMstring .. "\n" .. mgrs_line .. "\n" .. decSstring, zone.point)
                 DPIReader.zoneNr = DPIReader.zoneNr + 1
 
-                str = str .. line .. " " .. mgrs_line .. "\n"
+                textOutString = textOutString .. searchName .. " " .. elevation .. "ft" .. "\n| " .. decMstring .. "\n| " .. mgrs_line .. "\n| " .. decSstring .. "\n"
+                logString = logString .. searchName .. " " .. elevation .. "ft" .. " " .. decMstring .. " " .. mgrs_line .. " " .. decSstring .. "\n"
             end
 
             if not zone then
                 zoneNameValid = false
-                str = str .. "\n"
+                textOutString = textOutString .. "\n"
+                logString = logString .. "\n"
             end
         end
 
-        trigger.action.outText("DPIs logged in the DCS.log file in Saved Games\\DCS\\Logs: \n\n" .. str, 10, true)
-        env.info("\n\n" .. str )
+        trigger.action.outText("DPIs logged in the DCS.log file in Saved Games\\DCS\\Logs: \n\n" .. textOutString, 10, true)
+        env.info("\n" .. logString )
     end
 end
 
 DPIReader.record(names)
+
