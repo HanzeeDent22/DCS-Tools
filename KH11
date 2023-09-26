@@ -1,0 +1,251 @@
+--[[
+
+Key Hole 11
+
+Further development of DPIReader which was intended to quickly pull Desired Points of Impact (DPIs) from DCS into briefings and kneeboards by placing trigger zones in the ME.
+KH11 can also move the DCS free camera and take screenshots at the DPI locations. DPI information is one on the F10 map and in the logs as well as on each screenshot.
+
+How to
+1.  In the DCS mission editor, name and create one zone. Copy the zone with ctrl+c/v to the locations you want to. DCS will add a "-" and number to the zone name. The script ignores the initial zone without a number. Screenshots and logs are sorted by names.
+2.  Create a trigger that executes this file after mission start. Best practice is to use a "Time More" condition with the "DO Script File" action.
+3.  Create a trigger that will call the global function named "zap" in this script. You can use "time more " again. The function needs a table of names, a boolean for wether you want to take screenshots, the altitude of the camera (zoom), a wait time and a boolean for wether or not you want addition marks on the F10 map.
+    Example: KH11.zap({ "DPI_ATO1", "DPI_ATO2"}, true, 5500, 1)
+4.  Run the mission. A message will show when the script is executed.
+5.  Zones are marked on the F10 map. There is an option in the top bar to show the text of all marks.
+6. You can copy a list of the DPIs from the dcs.log file in your saved games folder at Saved Games\DCS\Logs. You have to re-open the DCS.log file to see new logs after running the script again. The elevation is always ground level. DCS might return incorrect MGRS grids for the script.
+
+]]
+
+
+local function mToft(m)
+    local ft = m / 0.3048
+    return ft
+end
+
+local function LLtoString(lat, long)
+    local latDir = "N"
+    local longDir = "E"
+
+    if lat < 0 then
+        latDir = "S"
+    end
+    if long < 0 then
+        longDir = "W"
+    end
+
+    if lat < 0 then
+        lat = lat * -1
+    end
+
+    if long < 0 then
+        long = long * -1
+    end
+
+    -- degrees dd/ddd
+    local lat_d_floor = math.floor(lat)
+    local long_d_floor = math.floor(long)
+
+    -- minutes mm.mmm
+    local lat_M = (lat - lat_d_floor) * 60
+    local long_M = (long - long_d_floor) * 60
+
+    local str_decM = string.format("%s%02d°%06.3f %s%02d°%06.3f", latDir, lat_d_floor, lat_M, longDir, long_d_floor,
+        long_M)
+
+    -- minutes mm
+    local lat_M_floor = math.floor(lat_M)
+    local long_M_floor = math.floor(long_M)
+
+    -- seconds ss.sss
+    local lat_S = (lat_M - lat_M_floor) * 60
+    local long_S = (long_M - long_M_floor) * 60
+
+    local str_decS = string.format("%s%02d°%02d\'%06.3f\" %s%02d°%02d\'%06.3f\"", latDir, lat_d_floor, lat_M_floor,
+        lat_S, longDir, long_d_floor, long_M_floor, long_S)
+
+    return str_decM, str_decS
+end
+
+local pos_straightdown = {
+    x = { x = 0, y = -0.1, z = 0 },
+    y = { x = 0, y = 0, z = 0 },
+    z = { x = 0, y = 00, z = 0 },
+    p = { x = 0, y = 15000, z = 0 }
+}
+
+local function moveCam(pos)
+    local str_pos = "  { x = { x = " ..
+        pos.x.x ..
+        ", y = " ..
+        pos.x.y ..
+        ", z = " ..
+        pos.x.z ..
+        " },    y = { x =" ..
+        pos.y.x ..
+        ", y = " ..
+        pos.y.y ..
+        ", z = " ..
+        pos.y.z ..
+        " },    z = { x = " ..
+        pos.z.x ..
+        ", y = " ..
+        pos.z.y ..
+        ", z =" .. pos.z.z .. " }, p = { x = " .. pos.p.x .. ", y = " .. pos.p.y .. ", z = " .. pos.p.z .. " }}"
+
+    local str = "LoSetCameraPosition(" .. str_pos .. ")"
+    net.dostring_in("export", str)
+end
+
+local function moveCamP(pos, p)
+    pos.p.x = p.x
+    pos.p.z = p.z
+    moveCam(pos)
+end
+
+local nextFrame = 0
+
+local function snap(time)
+    net.dostring_in("export", "LoSetCommand(257)") -- screenshot
+end
+
+local function overhead(table, time)
+    pos_straightdown.p.y = table._altitude
+    moveCamP(pos_straightdown, table._point)
+
+    trigger.action.outText(table._text, 1 + table._wait, true)
+    timer.scheduleFunction(snap, _, time + 1 + table._wait)
+end
+
+local markNr = 1
+
+local function record(names, screenshot, altitude, wait, newMarks)
+    local textOutString = ""
+    local logString = "\n"
+
+    if screenshot then
+        net.dostring_in("export", "LoSetCommand(158)") -- free cam
+        net.dostring_in("export", "LoSetCommand(334)") -- zoom
+        if not altitude then
+            altitude = 5500
+        end
+        if not wait then
+            wait = 0
+        end
+    end
+
+    for _, name in pairs(names) do
+        local number = 0
+        local zoneNameValid = true
+        local centr = {}
+        centr.x = 0
+        centr.z = 0
+        local marks = {}
+
+        while zoneNameValid do
+            number = number + 1
+            local searchName = name .. "-" .. tostring(number)
+            local zone = trigger.misc.getZone(searchName)
+
+
+            if zone then
+                centr.x = centr.x + zone.point.x
+                centr.z = centr.z + zone.point.z
+
+                local latitude, longitude, _ = coord.LOtoLL(zone.point)
+                local elevation = math.floor(mToft(land.getHeight({ x = zone.point.x, y = zone.point.z })))
+                elevation = string.format("%05d", elevation)
+                local decMstring, decSstring = LLtoString(latitude, longitude)
+
+
+                local mgrs = coord.LLtoMGRS(latitude, longitude)
+                local mgrs_line = string.format("%s %s %05d%05d ", mgrs.UTMZone, mgrs.MGRSDigraph, mgrs.Easting,
+                    mgrs.Northing)
+
+                textOutString = textOutString ..
+                    searchName ..
+                    " " ..
+                    elevation .. "ft" .. "\n| " .. decMstring .. "\n| " .. mgrs_line .. "\n| " .. decSstring .. "\n"
+                logString = logString ..
+                    searchName ..
+                    " " .. elevation .. "ft" .. " " .. decMstring .. " " .. mgrs_line .. " " .. decSstring .. "\n"
+
+                if screenshot then
+                    local text = searchName ..
+                        " " .. elevation .. "ft" .. "\n" .. decMstring .. "\n" .. mgrs_line .. "\n" .. decSstring
+                    local table = { _point = zone.point, _altitude = altitude, _wait = wait, _text = text }
+
+                    nextFrame = nextFrame + wait + 1.01
+
+                    if nextFrame < timer.getAbsTime() - timer.getTime0() + 3 then
+                        nextFrame = timer.getAbsTime() - timer.getTime0() + 3
+                    end
+
+                    timer.scheduleFunction(overhead, table, nextFrame)
+                end
+
+                local markText =
+                    searchName ..
+                    " " .. elevation .. "ft" .. "\n" .. decMstring .. "\n" .. mgrs_line .. "\n" .. decSstring
+                -- trigger.action.markToAll(markNr, markText, zone.point)
+                -- trigger.action.circleToAll(-1, markNr+1,zone.point, 200, { 1, 0, 0, 1 }, { 0, 0, 0, 1 }, 1, true)
+                table.insert(marks, { text = markText, p = zone.point, nr = number })
+
+               
+                    trigger.action.markToAll(markNr , markText ,zone.point , true)
+                    markNr = markNr + 1
+                
+
+            else
+                zoneNameValid = false
+                textOutString = textOutString .. "\n"
+                logString = logString .. "\n"
+                
+
+                if newMarks then
+                    number = number - 1
+                    centr.x = centr.x / (number)
+                    centr.z = centr.z / (number)
+                    local outP = { x = 0, y = 0, z = 0 }
+                    local maxZ = 0
+                    table.sort(marks, function(a, b) return a.p.z < b.p.z end)
+                    for _, t in ipairs(marks) do
+                        maxZ = t.p.z
+                    end
+                    local maxX = 0
+                    table.sort(marks, function(a, b) return a.p.x < b.p.x end)
+                    for nr, t in ipairs(marks) do
+                        maxX = t.p.x
+                    end
+                    outP.z      = maxZ + (maxX - centr.x) * 0.5
+
+                    local count = 1
+                    table.sort(marks, function(a, b) return a.nr > b.nr end)
+                    for _, t in ipairs(marks) do
+                       -- trigger.action.circleToAll(-1, markNr, t.p, 10, { 1, 0, 0, 1 }, { 0, 0, 0, 0 }, 1, true)
+                        -- markNr = markNr + 1
+                        outP.x = centr.x + (-number / 2 + count) * (maxX - centr.x) * 0.5
+                        count = count + 1
+
+                        trigger.action.lineToAll(-1, markNr, t.p, outP, { 1, 0, 0, 1 }, 1, true)
+                        markNr = markNr + 1
+                        trigger.action.textToAll(-1, markNr, outP, { 1, 1, 1, 1 },
+                            { 0, 0, 0, 0.2 }, 15, true, t.text)
+                        markNr = markNr + 1
+                    end
+                end
+            end
+        end
+       
+    end
+    env.info(logString)
+    trigger.action.outText("DPIs logged in the DCS.log file in Saved Games\\DCS\\Logs: \n\n" .. textOutString, 10,
+      true)
+end
+
+
+-- global
+KH11 = {}
+
+function KH11.zap(name_table, screenshot, altitude, wait, newMarks)
+    record(name_table, screenshot, altitude, wait, newMarks)
+end
